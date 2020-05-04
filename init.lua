@@ -8,7 +8,7 @@ mutedTopic = topicRoot.."muted"
 messageTopic = topicRoot.."messages"
 brokerPort = 1883
 adafruitUsername = "Danhearn"
-adafruitKey = "aio_FxQW62yeaHLLWCQl3JvZdg7mJ064"
+adafruitKey = "aio_xbEX953IBuhGiRKPzdxzm6qEUIok"
 
 -- State Variables
 projects = {}
@@ -25,15 +25,15 @@ buzzer = nil
 -- Initialise Program
 function init()
     print("Initialising")
-    i2c.setup(0, 4, 3, i2c.SLOW)
 
     buzzer = require("buzzer")
     buzzer.init(buzzerPin)
-    
-    lcd = dofile("lcd1602.lua")()
-    lcd:clear()
-    lcd:put(lcd:locate(0, 0), "Build_status")
-    lcd:put(lcd:locate(1, 0), "IP:192.168.4.1")
+
+    lcd = require("lcd")
+    lcd.init(4, 3)
+    lcd.clear()
+    lcd.display(0, 0, "Build_status")
+    lcd.display(0, 1, "IP:192.168.4.1")
 
     led = require("led")
     led.init()
@@ -58,8 +58,8 @@ function init()
       end,
       function(err, str)
         print("End user error: #"..err..": "..str)
-        lcd:clear()
-        lcd:put(lcd:locate(0, 0), "WiFi error")
+        lcd.clear()
+        lcd.display(0, 1, "WiFi error")
       end
     )
 end
@@ -75,9 +75,9 @@ function connectToBroker()
         print("MQTT client connected to "..broker)
         client:subscribe({[projectStatusTopic]=0, [volumeTopic]=1, [mutedTopic]=2, [messageTopic]=3}, function(client)
             print("Subscribed to feeds")
-            lcd:clear()
-            lcd:put(lcd:locate(0, 0), "Waiting for")
-            lcd:put(lcd:locate(1, 0), "build updates")
+            lcd.clear()
+            lcd.display(0, 0, "Waiting for")
+            lcd.display(0, 1, "build updates")
             
             -- Send last value requests to feeds
             -- The /get string is added to the topic as the adafruit broker doesn't support
@@ -87,13 +87,13 @@ function connectToBroker()
 
             local screenTimer = tmr.create()
             screenTimer:register(5000, tmr.ALARM_AUTO, function()
-                lcd:clear()
+                lcd.clear()
                 if(currentProjectID == 1) then
-                    lcd:put(lcd:locate(0, 0), "Waiting for")
-                    lcd:put(lcd:locate(1, 0), "build updates")
+                    lcd.display(0, 0, "Waiting for")
+                    lcd.display(0, 1, "build updates")
                 else
-                    lcd:put(lcd:locate(0, 0), projectMapping[projectDisplayID])
-                    lcd:put(lcd:locate(1, 0), "ID:"..projectDisplayID..","..projects[projectMapping[projectDisplayID]]["status"])
+                    lcd.display(0, 0, projectMapping[projectDisplayID])
+                    lcd.display(0, 1, "ID:"..projectDisplayID..","..projects[projectMapping[projectDisplayID]]["status"])
                     if (projectDisplayID < currentProjectID-1) then
                         projectDisplayID = projectDisplayID + 1 
                     else
@@ -113,8 +113,8 @@ function connectToBroker()
     end)
     brokerConnection:on("offline",function(client)
         print("Client offline")
-        lcd:clear()
-        lcd:put(lcd:locate(0, 0), "MQTT offline")
+        lcd.clear()
+        lcd.display(0, 0, "MQTT offline")
     end)
     brokerConnection:on("message",function(client, topic, data)
         -- Only accept valid data
