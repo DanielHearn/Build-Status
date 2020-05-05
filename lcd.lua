@@ -2,7 +2,6 @@ lcd = {}
 local _offsets = { [0] = 0x80, 0xC0, 0x90, 0xD0 } -- 16x4
 
 function lcd.clear()
-    --lcd.sendData(0x00, 0)
     lcd.sendData(0x01, 0)
     lcd.sendData(0x02, 0)
 end

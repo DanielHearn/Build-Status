@@ -104,7 +104,7 @@ function connectToBroker()
             screenTimer:start()
 
             local pingTimer = tmr.create()
-            pingTimer:register(120000, tmr.ALARM_AUTO, function()
+            pingTimer:register(60000, tmr.ALARM_AUTO, function()
                 print("Sending ping")
                 client:publish(volumeTopic.."/get", 0, 1, 0)
             end)
