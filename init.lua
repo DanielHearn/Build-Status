@@ -1,3 +1,6 @@
+-- init.lua
+-- Contains the main system logic including MQTT communication
+
 -- Config Variables
 buzzerPin = 8
 broker = "io.adafruit.com"
@@ -8,7 +11,11 @@ mutedTopic = topicRoot.."muted"
 messageTopic = topicRoot.."messages"
 brokerPort = 1883
 adafruitUsername = "Danhearn"
-adafruitKey = "aio_xbEX953IBuhGiRKPzdxzm6qEUIok"
+adafruitKey = "test"
+
+-- Map travis build state to a user friendly status
+--statusTextMapping = {failed = "Failed", started = "Building", passed = "Passed"}
+
 
 -- State Variables
 projects = {}
@@ -21,26 +28,31 @@ brokerConnection = nil
 lcd = nil
 led = nil
 buzzer = nil
+pingTimer = nil
+screenTimer = nil
 
--- Initialise Program
+-- Initialise configuration, WiFi and hardware components
 function init()
     print("Initialising")
 
+    -- Initialise buzzer
     buzzer = require("buzzer")
     buzzer.init(buzzerPin)
 
+    -- Initialise screen
     lcd = require("lcd")
     lcd.init(4, 3)
     lcd.clear()
-    lcd.display(0, 0, "Build_status")
-    lcd.display(0, 1, "IP:192.168.4.1")
+    lcd.display(0, 1, "Build_Status")
+    lcd.display(0, 2, "IP:192.168.4.1")
 
+    -- Initialise LEDs
     led = require("led")
     led.init()
 
     -- Setp WiFi config for the end user network
     wifi.setmode(wifi.STATIONAP)
-    --wifi.ap.config({ssid="Build_Status", auth=wifi.OPEN})
+    wifi.ap.config({ssid="Build_Status", auth=wifi.OPEN})
 
     -- Start end user module for WiFi connection
     --enduser_setup.manual(true)
@@ -56,14 +68,67 @@ function init()
             connectToBroker()
         end
       end,
-      function(err, str)
-        print("End user error: #"..err..": "..str)
+      -- Handle end user errors
+      function(error, string)
+        print("End user error: #"..error..": "..string)
         lcd.clear()
         lcd.display(0, 1, "WiFi error")
       end
     )
 end
 
+function setupIntervals()
+    -- Update screen with project build status every 5 seconds
+    -- Shows each project in order with their ID, name, and last build status
+    screenTimer = tmr.create()
+    screenTimer:register(5000, tmr.ALARM_AUTO, function()
+        lcd.clear()
+
+        -- Check if projects are being tracked
+        -- If no projects are tracked then display waiting message
+        -- Else show build status while looping through available project IDs
+        if(currentProjectID == 1) then
+            lcd.display(0, 1, "Waiting for")
+            lcd.display(0, 2, "build updates")
+        else
+            lcd.display(0, 1, projectMapping[projectDisplayID])
+            lcd.display(0, 2, "ID:"..projectDisplayID..","..projects[projectMapping[projectDisplayID]]["status"])
+            if (projectDisplayID < currentProjectID-1) then
+                projectDisplayID = projectDisplayID + 1 
+            else
+                projectDisplayID = 1
+            end
+        end
+        collectgarbage()
+    end)
+    screenTimer:start()
+
+    -- Ping MQTT broker every 60 seconds to maintaing connection
+    pingTimer = tmr.create()
+    pingTimer:register(60000, tmr.ALARM_AUTO, function()
+        print("Sending ping")
+        client:publish(volumeTopic.."/get", 0, 1, 0)
+        collectgarbage()
+    end)
+    pingTimer:start()
+end
+
+function onBrokerConnection(client)
+    print("Subscribed to feeds")
+    lcd.clear()
+    lcd.display(0, 1, "Waiting for")
+    lcd.display(0, 2, "build updates")
+    
+    -- Send last value requests to feeds
+    -- The /get string is added to the topic as the adafruit broker doesn't support
+    -- MQTT retained messages and this is their workaround
+    client:publish(volumeTopic.."/get", 0, 1, 0)
+    client:publish(mutedTopic.."/get", 0, 1, 0)
+
+    setupIntervals()
+end
+
+-- Connect to the MQTT broker
 function connectToBroker()
     -- Connect to broker
     brokerConnection = mqtt.Client("Client1", 240, adafruitUsername, adafruitKey, 1, 6000)
@@ -73,48 +138,12 @@ function connectToBroker()
     brokerConnection:on("connect", function(client) 
         print("Client connected")
         print("MQTT client connected to "..broker)
-        client:subscribe({[projectStatusTopic]=0, [volumeTopic]=1, [mutedTopic]=2, [messageTopic]=3}, function(client)
-            print("Subscribed to feeds")
-            lcd.clear()
-            lcd.display(0, 0, "Waiting for")
-            lcd.display(0, 1, "build updates")
-            
-            -- Send last value requests to feeds
-            -- The /get string is added to the topic as the adafruit broker doesn't support
-            -- MQTT retained messages and this is their workaround
-            client:publish(volumeTopic.."/get", 0, 1, 0)
-            client:publish(mutedTopic.."/get", 0, 1, 0)
-
-            local screenTimer = tmr.create()
-            screenTimer:register(5000, tmr.ALARM_AUTO, function()
-                lcd.clear()
-                if(currentProjectID == 1) then
-                    lcd.display(0, 0, "Waiting for")
-                    lcd.display(0, 1, "build updates")
-                else
-                    lcd.display(0, 0, projectMapping[projectDisplayID])
-                    lcd.display(0, 1, "ID:"..projectDisplayID..","..projects[projectMapping[projectDisplayID]]["status"])
-                    if (projectDisplayID < currentProjectID-1) then
-                        projectDisplayID = projectDisplayID + 1 
-                    else
-                        projectDisplayID = 1
-                    end
-                end
-            end)
-            screenTimer:start()
-
-            local pingTimer = tmr.create()
-            pingTimer:register(60000, tmr.ALARM_AUTO, function()
-                print("Sending ping")
-                client:publish(volumeTopic.."/get", 0, 1, 0)
-            end)
-            pingTimer:start()
-        end)
+        client:subscribe({[projectStatusTopic]=0, [volumeTopic]=1, [mutedTopic]=2, [messageTopic]=3}, onBrokerConnection)
     end)
     brokerConnection:on("offline",function(client)
         print("Client offline")
         lcd.clear()
-        lcd.display(0, 0, "MQTT offline")
+        lcd.display(0, 1, "MQTT offline")
     end)
     brokerConnection:on("message",function(client, topic, data)
         -- Only accept valid data
@@ -126,33 +155,40 @@ function connectToBroker()
                 local stateMatch = string.match(data, '"state":"[%w%d%s_-]*"')
                 data = nil
                 collectgarbage()
-
+                
                 -- Only continue processing if the required strings are found
                 if (nameMatch ~= nil and stateMatch ~= nil) then
-
+                    
                     -- Retrieve values from JSON substrings
                     local name = string.sub(nameMatch, 9, string.len(nameMatch)-1)
-                    local state = string.sub(stateMatch, 10, string.len(stateMatch)-1)
                     nameMatch = nil
+                    local state = string.sub(stateMatch, 10, string.len(stateMatch)-1)
                     stateMatch = nil
-                
+                    
                     if name then
                         -- Check if project name already exists in the state
                         if projects[name] then
                             print("New build status for: "..name..", "..state)
-                            brokerConnection:publish(messageTopic, "New build status for: "..name..", "..state, 0, 0)
+                            --brokerConnection:publish(messageTopic, "New build status for: "..name..", "..state, 0, 0)
+                            -- Update project status
                             projects[name]["status"] = state
                             collectgarbage()
-                            showStatus(projects[name])
+
+                            -- Update LEDs and check if buzzer needed
+                            showStatus(name)
                         else
                             if currentProjectID <= 2 then
                                 print("New project for: "..name..", "..state)
-                                brokerConnection:publish(messageTopic, "New project for: "..name..", "..state, 0, 0)
+                                --brokerConnection:publish(messageTopic, "New project for: "..name..", "..state, 0, 0)
+                                
+                                -- Create new project
                                 projects[name] = {name=name, status=state, id=currentProjectID}
                                 projectMapping[currentProjectID] = name
                                 currentProjectID = currentProjectID + 1
                                 collectgarbage()
-                                showStatus(projects[name])
+
+                                -- Update LEDs and check if buzzer needed
+                                showStatus(name)
                            else
                                 print("Project limit reached")
                                 brokerConnection:publish(messageTopic, "Project limit reached", 0, 0)
@@ -160,6 +196,7 @@ function connectToBroker()
                         end
                     end
 
+                    -- Clear variables to save memory
                     name = nil
                     state = nil
                 else
@@ -200,8 +237,9 @@ function connectToBroker()
     end)
 end
 
-function showStatus(project)
+function showStatus(name)
     -- Retrieve required values from project
+    local project = projects[name]
     local turnBuzzerOn = false
     print("Showing status for ID: "..project["id"]..", "..project["name"].." with status: "..project["status"])
 
