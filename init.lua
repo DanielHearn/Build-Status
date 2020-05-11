@@ -2,26 +2,26 @@
 -- Contains the main system logic including MQTT communication
 
 -- Config Variables
-buzzerPin = 8
-broker = "io.adafruit.com"
-topicRoot = "Danhearn/feeds/"
-projectStatusTopic = topicRoot.."project-status"
-volumeTopic = topicRoot.."volume"
-mutedTopic = topicRoot.."muted"
-messageTopic = topicRoot.."messages"
-brokerPort = 1883
-adafruitUsername = "Danhearn"
-adafruitKey = "test"
+BUZZER_PIN = 8
+BUZZER_CYCLES = 7
+BROKER_IP = "io.adafruit.com"
+TOPIC_ROOT = "Danhearn/feeds/"
+PROJECT_STATUS_TOPIC = TOPIC_ROOT.."project-status"
+VOLUME_TOPIC = TOPIC_ROOT.."volume"
+MUTED_TOPIC = TOPIC_ROOT.."muted"
+MESSAGE_TOPIC = TOPIC_ROOT.."messages"
+BROKER_PORT = 1883
+BROKER_USERNAME = "Danhearn"
+BROKER_KEY = "aio_MBhm82USelxaeLGHZlgFEnpXJACN"
 
--- Map travis build state to a user friendly status
---statusTextMapping = {failed = "Failed", started = "Building", passed = "Passed"}
+-- Map travis build state to a user friendly status string
+STATUS_TEXT = {failed = "Failed", started = "Building", passed = "Passed"}
 
 
 -- State Variables
 projects = {}
 projectMapping = {}
 buzzerHigh = true
-buzzerCycles = 7
 currentProjectID = 1
 projectDisplayID = 1
 brokerConnection = nil
@@ -37,7 +37,7 @@ function init()
 
     -- Initialise buzzer
     buzzer = require("buzzer")
-    buzzer.init(buzzerPin)
+    buzzer.init(BUZZER_PIN)
 
     -- Initialise screen
     lcd = require("lcd")
@@ -52,7 +52,7 @@ function init()
 
     -- Setp WiFi config for the end user network
     wifi.setmode(wifi.STATIONAP)
-    wifi.ap.config({ssid="Build_Status", auth=wifi.OPEN})
+    --wifi.ap.config({ssid="Build_Status", auth=wifi.OPEN})
 
     -- Start end user module for WiFi connection
     --enduser_setup.manual(true)
@@ -77,7 +77,7 @@ function init()
     )
 end
 
-function setupIntervals()
+function setupIntervals(client)
     -- Update screen with project build status every 5 seconds
     -- Shows each project in order with their ID, name, and last build status
     screenTimer = tmr.create()
@@ -91,9 +91,10 @@ function setupIntervals()
             lcd.display(0, 1, "Waiting for")
             lcd.display(0, 2, "build updates")
         else
-            lcd.display(0, 1, projectMapping[projectDisplayID])
-            lcd.display(0, 2, "ID:"..projectDisplayID..","..projects[projectMapping[projectDisplayID]]["status"])
-            if (projectDisplayID < currentProjectID-1) then
+            local projectName = projectMapping[projectDisplayID]
+            lcd.display(0, 1, projectName)
+            lcd.display(0, 2, "ID:"..projectDisplayID..","..STATUS_TEXT[projects[projectName]["status"]])
+            if (projectDisplayID < currentProjectID - 1) then
                 projectDisplayID = projectDisplayID + 1 
             else
                 projectDisplayID = 1
@@ -107,7 +108,7 @@ function setupIntervals()
     pingTimer = tmr.create()
     pingTimer:register(60000, tmr.ALARM_AUTO, function()
         print("Sending ping")
-        client:publish(volumeTopic.."/get", 0, 1, 0)
+        client:publish(VOLUME_TOPIC.."/get", 0, 1, 0)
         collectgarbage()
     end)
     pingTimer:start()
@@ -122,23 +123,23 @@ function onBrokerConnection(client)
     -- Send last value requests to feeds
     -- The /get string is added to the topic as the adafruit broker doesn't support
     -- MQTT retained messages and this is their workaround
-    client:publish(volumeTopic.."/get", 0, 1, 0)
-    client:publish(mutedTopic.."/get", 0, 1, 0)
+    client:publish(VOLUME_TOPIC.."/get", 0, 1, 0)
+    client:publish(MUTED_TOPIC.."/get", 0, 1, 0)
 
-    setupIntervals()
+    setupIntervals(client)
 end
 
 -- Connect to the MQTT broker
 function connectToBroker()
     -- Connect to broker
-    brokerConnection = mqtt.Client("Client1", 240, adafruitUsername, adafruitKey, 1, 6000)
+    brokerConnection = mqtt.Client("Client1", 240, BROKER_USERNAME, BROKER_KEY, 1, 10000)
     brokerConnection:lwt("/lwt","Now offline", 1, 0)
 
     -- On succesfull broker connection subscribe to all fields
     brokerConnection:on("connect", function(client) 
         print("Client connected")
-        print("MQTT client connected to "..broker)
-        client:subscribe({[projectStatusTopic]=0, [volumeTopic]=1, [mutedTopic]=2, [messageTopic]=3}, onBrokerConnection)
+        print("MQTT client connected to "..BROKER_IP)
+        client:subscribe({[PROJECT_STATUS_TOPIC]=0, [VOLUME_TOPIC]=1, [MUTED_TOPIC]=2, [MESSAGE_TOPIC]=3}, onBrokerConnection)
     end)
     brokerConnection:on("offline",function(client)
         print("Client offline")
@@ -149,7 +150,7 @@ function connectToBroker()
         -- Only accept valid data
         if data ~= nil then
             -- Process the message depending on the topic is was sent in
-            if topic == projectStatusTopic then
+            if topic == PROJECT_STATUS_TOPIC then
                 -- Retrieve the required substrings from the project status message
                 local nameMatch = string.match(data, '"name":"[%w%d%s_-]*"')
                 local stateMatch = string.match(data, '"state":"[%w%d%s_-]*"')
@@ -169,7 +170,7 @@ function connectToBroker()
                         -- Check if project name already exists in the state
                         if projects[name] then
                             print("New build status for: "..name..", "..state)
-                            --brokerConnection:publish(messageTopic, "New build status for: "..name..", "..state, 0, 0)
+                            brokerConnection:publish(MESSAGE_TOPIC, "New build status: "..name..", "..state, 0, 0)
                             -- Update project status
                             projects[name]["status"] = state
                             collectgarbage()
@@ -179,7 +180,7 @@ function connectToBroker()
                         else
                             if currentProjectID <= 2 then
                                 print("New project for: "..name..", "..state)
-                                --brokerConnection:publish(messageTopic, "New project for: "..name..", "..state, 0, 0)
+                                brokerConnection:publish(MESSAGE_TOPIC, "New project being tracked: "..name..", "..state, 0, 0)
                                 
                                 -- Create new project
                                 projects[name] = {name=name, status=state, id=currentProjectID}
@@ -191,7 +192,7 @@ function connectToBroker()
                                 showStatus(name)
                            else
                                 print("Project limit reached")
-                                brokerConnection:publish(messageTopic, "Project limit reached", 0, 0)
+                                brokerConnection:publish(MESSAGE_TOPIC, "Error: Project limit reached", 0, 0)
                            end 
                         end
                     end
@@ -202,9 +203,9 @@ function connectToBroker()
                 else
                     -- Handle invalid project status strings that don't match expected structure
                     print("Invalid project status string")
-                    brokerConnection:publish(messageTopic, "Invalid project status string", 0, 0)
+                    brokerConnection:publish(MESSAGE_TOPIC, "Error: Invalid project status string", 0, 0)
                 end
-            elseif topic == volumeTopic then
+            elseif topic == VOLUME_TOPIC then
                 local volumeValue = tonumber(data)
                 data = nil
                 
@@ -213,7 +214,7 @@ function connectToBroker()
                     buzzer.volume = volumeValue*10
                     print("New volume: "..tostring(buzzer.volume))
                 end
-            elseif topic == mutedTopic then
+            elseif topic == MUTED_TOPIC then
                 -- Validate muted value is one of the expected two values sent by the MQTT dashboard
                 -- switch input
                 if data == "YES" then
@@ -223,16 +224,16 @@ function connectToBroker()
                 end
                 data = nil
                 print("New muted: "..tostring(buzzer.muted))
-            elseif topic ~= messageTopic then
+            elseif topic ~= MESSAGE_TOPIC then
                 -- Handle messages that don't fit any of the expected topics
-                brokerConnection:publish(messageTopic, "Unexpected message received by ESP: "..data, 0, 0)
+                brokerConnection:publish(MESSAGE_TOPIC, "Error: Unexpected message received by ESP: "..data, 0, 0)
             end
         end
         collectgarbage()
     end)
 
-    -- Handle broker connection failures
-    brokerConnection:connect(broker, brokerPort, false, false, function(conn) end, function(conn,reason)
+    -- Connect to broker
+    brokerConnection:connect(BROKER_IP, BROKER_PORT, false, false, function(conn) end, function(conn,reason)
         print("Fail! Failed reason is: "..reason)
     end)
 end
@@ -285,7 +286,7 @@ function showStatus(name)
         if buzzer.active == false then
             print("Buzzer timer active")
             buzzerHigh = true
-            buzzerCyclesUsed = 1
+            BUZZER_CYCLESUsed = 1
             collectgarbage()
             
             -- Create timer for buzzer that turns it on and off
@@ -303,8 +304,8 @@ function showStatus(name)
                 end
     
                 -- Repeat buzzer if not all cycles have been used otherwise disable buzzer
-                if buzzerCyclesUsed < buzzerCycles then
-                    buzzerCyclesUsed = buzzerCyclesUsed + 1
+                if BUZZER_CYCLESUsed < BUZZER_CYCLES then
+                    BUZZER_CYCLESUsed = BUZZER_CYCLESUsed + 1
                     buzzerCycleTimer:start()
                 else
                     print("Buzzer timer disabled")
@@ -320,7 +321,7 @@ function showStatus(name)
        -- Turn all LEDs on to indicate an error
        led.lightProjectLeds(project["id"], {g="on",y="on",r="on"}) 
         
-       brokerConnection:publish(messageTopic, project["name"].." unexpected project status received", 0, 0)
+       brokerConnection:publish(MESSAGE_TOPIC, project["name"].." unexpected project status received", 0, 0)
     end
     collectgarbage()
 end
