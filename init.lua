@@ -3,7 +3,8 @@
 
 -- Config Variables
 BUZZER_PIN = 8
-BUZZER_CYCLES = 7
+LCD_SDA_PIN = 3
+LCD_SCL_PIN = 4
 BROKER_IP = "io.adafruit.com"
 TOPIC_ROOT = "Danhearn/feeds/"
 PROJECT_STATUS_TOPIC = TOPIC_ROOT.."project-status"
@@ -12,16 +13,14 @@ MUTED_TOPIC = TOPIC_ROOT.."muted"
 MESSAGE_TOPIC = TOPIC_ROOT.."messages"
 BROKER_PORT = 1883
 BROKER_USERNAME = "Danhearn"
-BROKER_KEY = "aio_MBhm82USelxaeLGHZlgFEnpXJACN"
+BROKER_KEY = "test"
 
 -- Map travis build state to a user friendly status string
 STATUS_TEXT = {failed = "Failed", started = "Building", passed = "Passed"}
 
-
 -- State Variables
 projects = {}
 projectMapping = {}
-buzzerHigh = true
 currentProjectID = 1
 projectDisplayID = 1
 brokerConnection = nil
@@ -41,7 +40,7 @@ function init()
 
     -- Initialise screen
     lcd = require("lcd")
-    lcd.init(4, 3)
+    lcd.init(LCD_SCL_PIN, LCD_SDA_PIN)
     lcd.clear()
     lcd.display(0, 1, "Build_Status")
     lcd.display(0, 2, "IP:192.168.4.1")
@@ -50,6 +49,11 @@ function init()
     led = require("led")
     led.init()
 
+    startWifi()
+end
+
+
+function startWifi()
     -- Setp WiFi config for the end user network
     wifi.setmode(wifi.STATIONAP)
     --wifi.ap.config({ssid="Build_Status", auth=wifi.OPEN})
@@ -73,6 +77,9 @@ function init()
         print("End user error: #"..error..": "..string)
         lcd.clear()
         lcd.display(0, 1, "WiFi error")
+
+        -- Attempt to reconnect to the WiFi network
+        startWifi()
       end
     )
 end
@@ -141,89 +148,28 @@ function connectToBroker()
         print("MQTT client connected to "..BROKER_IP)
         client:subscribe({[PROJECT_STATUS_TOPIC]=0, [VOLUME_TOPIC]=1, [MUTED_TOPIC]=2, [MESSAGE_TOPIC]=3}, onBrokerConnection)
     end)
+    
+    -- On broker disconnect attempt reconnection
     brokerConnection:on("offline",function(client)
         print("Client offline")
         lcd.clear()
         lcd.display(0, 1, "MQTT offline")
+
+        -- Try to reconnect to the broker
+        connectToBroker()
     end)
+
+    -- On broker message process message data based on the topic
     brokerConnection:on("message",function(client, topic, data)
         -- Only accept valid data
         if data ~= nil then
             -- Process the message depending on the topic is was sent in
             if topic == PROJECT_STATUS_TOPIC then
-                -- Retrieve the required substrings from the project status message
-                local nameMatch = string.match(data, '"name":"[%w%d%s_-]*"')
-                local stateMatch = string.match(data, '"state":"[%w%d%s_-]*"')
-                data = nil
-                collectgarbage()
-                
-                -- Only continue processing if the required strings are found
-                if (nameMatch ~= nil and stateMatch ~= nil) then
-                    
-                    -- Retrieve values from JSON substrings
-                    local name = string.sub(nameMatch, 9, string.len(nameMatch)-1)
-                    nameMatch = nil
-                    local state = string.sub(stateMatch, 10, string.len(stateMatch)-1)
-                    stateMatch = nil
-                    
-                    if name then
-                        -- Check if project name already exists in the state
-                        if projects[name] then
-                            print("New build status for: "..name..", "..state)
-                            brokerConnection:publish(MESSAGE_TOPIC, "New build status: "..name..", "..state, 0, 0)
-                            -- Update project status
-                            projects[name]["status"] = state
-                            collectgarbage()
-
-                            -- Update LEDs and check if buzzer needed
-                            showStatus(name)
-                        else
-                            if currentProjectID <= 2 then
-                                print("New project for: "..name..", "..state)
-                                brokerConnection:publish(MESSAGE_TOPIC, "New project being tracked: "..name..", "..state, 0, 0)
-                                
-                                -- Create new project
-                                projects[name] = {name=name, status=state, id=currentProjectID}
-                                projectMapping[currentProjectID] = name
-                                currentProjectID = currentProjectID + 1
-                                collectgarbage()
-
-                                -- Update LEDs and check if buzzer needed
-                                showStatus(name)
-                           else
-                                print("Project limit reached")
-                                brokerConnection:publish(MESSAGE_TOPIC, "Error: Project limit reached", 0, 0)
-                           end 
-                        end
-                    end
-
-                    -- Clear variables to save memory
-                    name = nil
-                    state = nil
-                else
-                    -- Handle invalid project status strings that don't match expected structure
-                    print("Invalid project status string")
-                    brokerConnection:publish(MESSAGE_TOPIC, "Error: Invalid project status string", 0, 0)
-                end
+                processProjectMessage(data)
             elseif topic == VOLUME_TOPIC then
-                local volumeValue = tonumber(data)
-                data = nil
-                
-                -- Validate volume is within the expected range according the MQTT dashboard slider input
-                if volumeValue >= 0 and volumeValue <= 100 then
-                    buzzer.volume = volumeValue*10
-                    print("New volume: "..tostring(buzzer.volume))
-                end
+                processVolumeMessage(data)
             elseif topic == MUTED_TOPIC then
-                -- Validate muted value is one of the expected two values sent by the MQTT dashboard
-                -- switch input
-                if data == "YES" then
-                    buzzer.muted = true
-                elseif data == "NO" then
-                    buzzer.muted = false
-                end
-                data = nil
-                print("New muted: "..tostring(buzzer.muted))
+                processMuteMessage(data)
             elseif topic ~= MESSAGE_TOPIC then
                 -- Handle messages that don't fit any of the expected topics
                 brokerConnection:publish(MESSAGE_TOPIC, "Error: Unexpected message received by ESP: "..data, 0, 0)
@@ -235,7 +181,90 @@ function connectToBroker()
     -- Connect to broker
     brokerConnection:connect(BROKER_IP, BROKER_PORT, false, false, function(conn) end, function(conn,reason)
         print("Fail! Failed reason is: "..reason)
+
+        -- Try to reconnect to the broker
+        connectToBroker()
     end)
+end
+
+function processVolumeMessage(data)
+    local volumeValue = tonumber(data)
+    data = nil
+    
+    -- Validate volume is within the expected range according the MQTT dashboard slider input
+    if volumeValue >= 0 and volumeValue <= 100 then
+        buzzer.volume = volumeValue*10
+        print("New volume: "..tostring(buzzer.volume))
+    end
+end
+
+function processMuteMessage(data)
+    -- Validate muted value is one of the expected two values sent by the MQTT dashboard
+    -- switch input
+    if data == "YES" then
+        buzzer.muted = true
+    elseif data == "NO" then
+        buzzer.muted = false
+    end
+    data = nil
+    print("New muted: "..tostring(buzzer.muted))
+end
+
+function processProjectMessage(data)
+    -- Retrieve the required substrings from the project status message
+    local nameMatch = string.match(data, '"name":"[%w%d%s_-]*"')
+    local stateMatch = string.match(data, '"state":"[%w%d%s_-]*"')
+    data = nil
+    collectgarbage()
+    
+    -- Only continue processing if the required strings are found
+    if (nameMatch ~= nil and stateMatch ~= nil) then
+        
+        -- Retrieve values from JSON substrings
+        local name = string.sub(nameMatch, 9, string.len(nameMatch)-1)
+        nameMatch = nil
+        local state = string.sub(stateMatch, 10, string.len(stateMatch)-1)
+        stateMatch = nil
+        
+        if name then
+            -- Check if project name already exists in the state
+            if projects[name] then
+                print("New build status for: "..name..", "..state)
+                brokerConnection:publish(MESSAGE_TOPIC, "New build status: "..name..", "..state, 0, 0)
+                -- Update project status
+                projects[name]["status"] = state
+                collectgarbage()
+
+                -- Update LEDs and check if buzzer needed
+                showStatus(name)
+            else
+                if currentProjectID <= 2 then
+                    print("New project for: "..name..", "..state)
+                    brokerConnection:publish(MESSAGE_TOPIC, "New project being tracked: "..name..", "..state, 0, 0)
+                    
+                    -- Create new project
+                    projects[name] = {name=name, status=state, id=currentProjectID}
+                    projectMapping[currentProjectID] = name
+                    currentProjectID = currentProjectID + 1
+                    collectgarbage()
+
+                    -- Update LEDs and check if buzzer needed
+                    showStatus(name)
+               else
+                    print("Project limit reached")
+                    brokerConnection:publish(MESSAGE_TOPIC, "Error: Project limit reached", 0, 0)
+               end 
+            end
+        end
+
+        -- Clear variables to save memory
+        name = nil
+        state = nil
+    else
+        -- Handle invalid project status strings that don't match expected structure
+        print("Invalid project status string")
+        brokerConnection:publish(MESSAGE_TOPIC, "Error: Invalid project status string", 0, 0)
+    end
 end
 
 function showStatus(name)
@@ -285,37 +314,17 @@ function showStatus(name)
 
         if buzzer.active == false then
             print("Buzzer timer active")
-            buzzerHigh = true
-            BUZZER_CYCLESUsed = 1
-            collectgarbage()
-            
-            -- Create timer for buzzer that turns it on and off
-            buzzerCycleTimer = tmr.create()
-            buzzerCycleTimer:register(1000, tmr.ALARM_SEMI , function()
-                -- Toggle red LED and buzzer depending on current state
-                if buzzerHigh == true then
-                    buzzerHigh = false
-                    buzzer.stop()
-                    led.lightProjectLeds(project["id"], {g="off",y="off",r="off"}) 
-                else
-                    buzzerHigh = true
-                    buzzer.start()
-                    led.lightProjectLeds(project["id"], {g="off",y="off",r="on"}) 
-                end
-    
-                -- Repeat buzzer if not all cycles have been used otherwise disable buzzer
-                if BUZZER_CYCLESUsed < BUZZER_CYCLES then
-                    BUZZER_CYCLESUsed = BUZZER_CYCLESUsed + 1
-                    buzzerCycleTimer:start()
-                else
-                    print("Buzzer timer disabled")
-                    buzzer.stop()
-                    led.lightProjectLeds(project["id"], {g="off",y="off",r="on"}) 
-                    buzzerHigh = true
-                    turnBuzzerOn = false
-                end
+
+            -- Start buzzer cycle in synchronisation with the red LED
+            buzzer.cycle(function()
+                led.lightProjectLeds(project["id"], {g="off",y="off",r="on"}) 
+            end, function()
+                led.lightProjectLeds(project["id"], {g="off",y="off",r="off"}) 
+            end, function()
+                led.lightProjectLeds(project["id"], {g="off",y="off",r="on"}) 
+                turnBuzzerOn = false
             end)
-            buzzerCycleTimer:start()
+            collectgarbage()
         end
     else
        -- Turn all LEDs on to indicate an error
