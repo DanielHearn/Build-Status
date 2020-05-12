@@ -56,10 +56,10 @@ end
 function startWifi()
     -- Setp WiFi config for the end user network
     wifi.setmode(wifi.STATIONAP)
-    --wifi.ap.config({ssid="Build_Status", auth=wifi.OPEN})
+    wifi.ap.config({ssid="Build_Status", auth=wifi.OPEN})
 
     -- Start end user module for WiFi connection
-    --enduser_setup.manual(true)
+    enduser_setup.manual(true)
     enduser_setup.start(
       function()
         print("Connected to WiFi network")
@@ -74,7 +74,7 @@ function startWifi()
       end,
       -- Handle end user errors
       function(error, string)
-        print("End user error: #"..error..": "..string)
+        print("End user error")
         lcd.clear()
         lcd.display(0, 1, "WiFi error")
 
@@ -111,12 +111,13 @@ function setupIntervals(client)
     end)
     screenTimer:start()
 
-    -- Ping MQTT broker every 60 seconds to maintaing connection
+    -- Ping MQTT broker every 60 seconds to maintain connection
     pingTimer = tmr.create()
     pingTimer:register(60000, tmr.ALARM_AUTO, function()
         print("Sending ping")
-        client:publish(VOLUME_TOPIC.."/get", 0, 1, 0)
-        collectgarbage()
+        if (client ~= nil) then
+            client:publish(VOLUME_TOPIC.."/get", 0, 1, 0)
+        end
     end)
     pingTimer:start()
 end
@@ -133,12 +134,15 @@ function onBrokerConnection(client)
     client:publish(VOLUME_TOPIC.."/get", 0, 1, 0)
     client:publish(MUTED_TOPIC.."/get", 0, 1, 0)
 
-    setupIntervals(client)
+    -- Only setup alarm intervals on first broker connection
+    if (screenTimer == nil) then
+        setupIntervals(client)
+    end
 end
 
 -- Connect to the MQTT broker
 function connectToBroker()
-    -- Connect to broker
+    -- Create broker connection
     brokerConnection = mqtt.Client("Client1", 240, BROKER_USERNAME, BROKER_KEY, 1, 10000)
     brokerConnection:lwt("/lwt","Now offline", 1, 0)
 
@@ -187,6 +191,7 @@ function connectToBroker()
     end)
 end
 
+-- Process volume messages
 function processVolumeMessage(data)
     local volumeValue = tonumber(data)
     data = nil
@@ -198,9 +203,9 @@ function processVolumeMessage(data)
     end
 end
 
+-- Process mute message
 function processMuteMessage(data)
     -- Validate muted value is one of the expected two values sent by the MQTT dashboard
-    -- switch input
     if data == "YES" then
         buzzer.muted = true
     elseif data == "NO" then
@@ -210,8 +215,9 @@ function processMuteMessage(data)
     print("New muted: "..tostring(buzzer.muted))
 end
 
+-- Process project message
 function processProjectMessage(data)
-    -- Retrieve the required substrings from the project status message
+    -- Retrieve the required substrings from the project status message JSON
     local nameMatch = string.match(data, '"name":"[%w%d%s_-]*"')
     local stateMatch = string.match(data, '"state":"[%w%d%s_-]*"')
     data = nil
